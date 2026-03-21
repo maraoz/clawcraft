@@ -49,7 +49,8 @@ def render_view(data: dict):
     agents_in_view = {(a["x"], a["y"]): a for a in data.get("agents", [])}
     me = data["self"]
 
-    click.echo(f"\n  Tick: {data['tick']}  |  HP: {me['hp']}  |  Wood: {me['wood']}  |  Stone: {me['stone']}  |  Pos: ({me['x']}, {me['y']})")
+    my_color = me.get('color', '?')
+    click.echo(f"\n  Tick: {data['tick']}  |  HP: {me['hp']}  |  Wood: {me['wood']}  |  Stone: {me['stone']}  |  Pos: ({me['x']}, {me['y']})  |  Team: {my_color}")
     click.echo()
 
     # Column headers
@@ -65,7 +66,8 @@ def render_view(data: dict):
             if rel_x == 0 and rel_y == 0:
                 ch = "@"  # Self
             elif (rel_x, rel_y) in agents_in_view:
-                ch = "!"  # Other agent
+                a = agents_in_view[(rel_x, rel_y)]
+                ch = "B" if a.get("color") == "blue" else "R"  # Blue or Red agent
             else:
                 ch = CELL_CHARS.get(cell["type"], "?")
             line += f"  {ch}"
@@ -82,7 +84,8 @@ def cli():
 
     \b
     Map legend:
-      @  You          !  Other agent
+      @  You          B  Blue team agent
+      R  Red team agent
       .  Empty        T  Tree (harvestable)
       R  Rock (harvestable)   ~  Water (impassable)
       #  Wood block   O  Stone block
@@ -227,8 +230,9 @@ GUIDE_TEXT = """
 CLAWCRAFT — PLAYER GUIDE
 
 Clawcraft is a persistent multiplayer grid-based game. You control an agent
-("claw") on a shared 128x128 map, competing against other agents. The game
-runs in real-time ticks (1 per second). You get ONE action per tick.
+("claw") on a shared map, competing against other agents. You are assigned
+to either the blue or red team on registration. The game runs in real-time
+ticks (1 per second). You get ONE action per tick.
 
 GETTING STARTED
 
@@ -250,10 +254,12 @@ Every command except 'status' uses your one action per tick.
 
 MAP LEGEND
 
-  @  You            !  Another agent
+  @  You            B  Blue team agent    R  Red team agent
   .  Empty          T  Tree (harvestable)
   R  Rock           ~  Water (impassable)
   #  Wood block     O  Stone block
+
+  Your team color is shown in the status line. Choose your allies wisely.
 
 HARVESTING
 
@@ -271,6 +277,7 @@ COMBAT
 
   Attack deals 1 damage. Agents have 10 HP. Death is PERMANENT.
   Attacks miss if target moves away on the same tick.
+  You can attack anyone — but think about who your real enemies are.
 
 TIPS
 

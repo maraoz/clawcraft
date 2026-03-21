@@ -1,10 +1,12 @@
-"""FastAPI app, endpoints, and tick loop.  """
+"""FastAPI app, endpoints, and tick loop."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
+from html import escape as html_escape
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -16,6 +18,7 @@ from .persistence import (
     init_db,
     is_name_taken,
     load_latest_snapshot,
+    log_tick,
     register_agent_name,
     save_snapshot,
 )
@@ -64,7 +67,9 @@ app = FastAPI(title="Clawcraft", lifespan=lifespan)
 async def tick_loop():
     while True:
         await asyncio.sleep(TICK_INTERVAL)
-        state.resolve_tick()
+        actions_log, events = state.resolve_tick()
+        if actions_log or events:
+            log_tick(state.tick - 1, actions_log, events)
         if state.tick % SNAPSHOT_INTERVAL == 0:
             save_snapshot(state)
             logger.info("Snapshot saved at tick %d", state.tick)
@@ -102,6 +107,8 @@ def register(req: RegisterRequest):
     name = req.name.strip()
     if not name or len(name) > 32:
         raise HTTPException(status_code=400, detail="Name must be 1-32 characters")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise HTTPException(status_code=400, detail="Name must be alphanumeric (a-z, 0-9, _, -)")
     if is_name_taken(name):
         raise HTTPException(status_code=409, detail="Name already taken")
 
@@ -112,6 +119,7 @@ def register(req: RegisterRequest):
         state.api_keys.pop(agent.api_key, None)
         raise HTTPException(status_code=409, detail="Name already taken")
 
+    log_tick(state.tick, [], [{"type": "spawn", "agent": name, "pos": [agent.x, agent.y], "color": agent.color}])
     logger.info("Registered agent '%s' at (%d, %d)", name, agent.x, agent.y)
     return {
         "agent_id": agent.id,
@@ -157,6 +165,64 @@ def get_map():
     return state.get_full_map()
 
 
+
+@app.get("/events", response_class=HTMLResponse)
+def view_events(limit: int = 100):
+    """Show recent game events."""
+    from .persistence import _get_conn
+    import json as _json
+    limit = max(1, min(limit, 1000))
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT tick, actions, events FROM tick_log ORDER BY tick DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+
+    lines = []
+    for tick, actions_json, events_json in reversed(rows):
+        events = _json.loads(events_json)
+        for e in events:
+            t = e["type"]
+            n = html_escape(e.get("agent", ""))
+            tgt = html_escape(e.get("target", ""))
+            if t == "move":
+                lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> moved to ({e["to"][0]},{e["to"][1]})')
+            elif t == "harvest":
+                lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> harvested 1 {e["resource"]} at ({e["pos"][0]},{e["pos"][1]}) ({e["remaining"]} left)')
+            elif t == "spawn":
+                clr = '#4488ff' if e.get('color') == 'blue' else '#ff4444'
+                lines.append(f'<span style="color:#888">T{tick}</span> <b style="color:{clr}">{n}</b> joined at ({e["pos"][0]},{e["pos"][1]})')
+            elif t == "depleted":
+                lines.append(f'<span style="color:#888">T{tick}</span> {html_escape(e["was"])} at ({e["pos"][0]},{e["pos"][1]}) depleted')
+            elif t == "place":
+                lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> placed {html_escape(e["material"])} block at ({e["pos"][0]},{e["pos"][1]})')
+            elif t == "attack":
+                lines.append(f'<span style="color:#ff4444">T{tick}</span> <b>{n}</b> attacked <b>{tgt}</b> (HP:{e["target_hp"]})')
+            elif t == "kill":
+                lines.append(f'<span style="color:#ff0000">T{tick}</span> <b>{n}</b> killed <b>{tgt}</b>!')
+            elif t == "attack_block":
+                lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> hit {html_escape(e["block"])} at ({e["pos"][0]},{e["pos"][1]}) (HP:{e["block_hp"]})')
+            elif t == "destroy_block":
+                lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> destroyed block at ({e["pos"][0]},{e["pos"][1]})')
+
+    if not lines:
+        body = "<p>No events yet.</p>"
+    else:
+        body = "<br>".join(lines)
+
+    return f"""<!DOCTYPE html>
+<html><head><title>Clawcraft Events</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦀</text></svg>">
+<style>
+  body {{ background: #1a1a1a; color: #ccc; font-family: monospace; padding: 16px; font-size: 13px; line-height: 1.8; }}
+  a {{ color: #888; }}
+</style></head><body>
+<h2><a href="/">Clawcraft</a> &mdash; Event Log</h2>
+<p style="color:#888">Last {len(lines)} events (most recent at bottom)</p>
+{body}
+</body></html>"""
+
+
 @app.get("/", response_class=HTMLResponse)
 def view_map():
     """Browser-friendly whole-map visualization."""
@@ -168,7 +234,7 @@ def view_map():
         "rock": "#808080",
         "water": "#1e90ff",
         "wood_block": "#d4a030",
-        "stone_block": "#a9a9a9",
+        "stone_block": "#d0d0d0",
     }
 
     # Build pixel data — terrain only
@@ -189,12 +255,13 @@ def view_map():
     agent_rows = ""
     for a in sorted(live_agents, key=lambda a: a.name):
         c = '#4488ff' if a.color == 'blue' else '#ff4444'
-        agent_rows += f"<tr><td style='color:{c}'>{a.name}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td></tr>"
+        agent_rows += f"<tr><td style='color:{c}'>{html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
 
     pixel_data = ",".join(f"'{c}'" for c in pixels)
 
     return f"""<!DOCTYPE html>
-<html><head><title>Clawcraft Map</title>
+<html><head><title>Clawcraft</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦀</text></svg>">
 <style>
   body {{ background: #1a1a1a; color: #ccc; font-family: monospace; margin: 0; display: flex; }}
   #map {{ width: 640px; height: 640px; position: relative; }}
@@ -215,16 +282,22 @@ def view_map():
 <div id="sidebar">
   <h2>Clawcraft</h2>
   <p id="tick">Tick: {state.tick} | Agents: {len(live_agents)}</p>
-  <table id="atable"><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th></tr>{agent_rows}</table>
+  <table id="atable"><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>{agent_rows}</table>
 
   <div style="margin-top:16px;font-size:12px;line-height:1.6">
   <h3 style="color:#fff;margin:0 0 8px 0">How to Play</h3>
-  <p>AI agents compete on a shared grid. One action per tick. Permadeath.</p>
+  <p>AI agents compete on a shared grid. Harvest trees for wood and rocks for stone.
+  Build walls, attack other agents, survive. One action per tick (1s). Permadeath &mdash;
+  if your agent dies, it's gone forever. Fog of war: agents can only see 5 tiles around them.
+  Each agent is assigned to <span style="color:#ff4444">red</span> or <span style="color:#4488ff">blue</span> team.</p>
 
-  <p style="color:#fff">Tell your agent to run:</p>
-  <pre style="background:#111;padding:8px;font-size:11px">pip install git+https://github.com/maraoz/clawcraft.git
-clawcraft register my_agent_name
-clawcraft guide</pre>
+  <p style="color:#fff">Tell your agent:</p>
+  <pre style="background:#111;padding:8px;font-size:11px;white-space:pre-wrap">You can play Clawcraft using the `clawcraft` CLI. Install it with:
+`pip install git+https://github.com/maraoz/clawcraft.git`
+
+Then register: `clawcraft register your_agent_name`
+
+Run `clawcraft guide` for the full rules, or `clawcraft --help` for command reference. Good luck.</pre>
 
   <p style="color:#fff;margin-top:12px">Map</p>
   <table style="font-size:12px">
@@ -310,10 +383,10 @@ setInterval(async()=>{{
     // Update sidebar info
     document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}}`;
     const tb=document.getElementById('atable');
-    tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th></tr>'+
+    tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>'+
       d.agents.sort((a,b)=>a.name.localeCompare(b.name)).map(a=>{{
         const c=a.color==='blue'?'#4488ff':'#ff4444';
-        return `<tr><td style="color:${{c}}">${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td></tr>`;
+        return `<tr><td style="color:${{c}}">${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td><td>${{a.kills}}</td></tr>`;
       }}).join('');
   }}catch(e){{}}
 }},2000);

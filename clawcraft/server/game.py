@@ -39,6 +39,7 @@ class Agent:
     wood: int = 0
     stone: int = 0
     color: str = "red"
+    kills: int = 0
     harvest_target: tuple[int, int] | None = None
     harvest_count: int = 0
 
@@ -52,6 +53,7 @@ class Agent:
             "wood": self.wood,
             "stone": self.stone,
             "color": self.color,
+            "kills": self.kills,
         }
 
 
@@ -98,10 +100,22 @@ class GameState:
     def queue_action(self, agent_id: str, action: dict):
         self.pending_actions[agent_id] = action
 
-    def resolve_tick(self):
-        """Process all queued actions simultaneously, then advance tick."""
+    def resolve_tick(self) -> tuple[list, list]:
+        """Process all queued actions simultaneously, then advance tick.
+
+        Returns (actions_log, events) for history recording.
+        """
         actions = dict(self.pending_actions)
         self.pending_actions.clear()
+
+        events: list[dict] = []
+
+        # Build actions log with agent names
+        actions_log = []
+        for aid, act in actions.items():
+            agent = self.agents.get(aid)
+            if agent:
+                actions_log.append({"agent": agent.name, "id": aid, **act})
 
         # Separate actions by type
         moves: dict[str, tuple[int, int]] = {}
@@ -138,7 +152,6 @@ class GameState:
                 attacks[agent_id] = (tx, ty)
 
         # --- Resolve moves ---
-        # Check for conflicts: two agents trying to move to same tile
         target_counts: dict[tuple[int, int], list[str]] = {}
         for aid, target in moves.items():
             target_counts.setdefault(target, []).append(aid)
@@ -146,22 +159,16 @@ class GameState:
         moved_agents: set[str] = set()
         for aid, (tx, ty) in moves.items():
             agent = self.agents[aid]
-            # Out of bounds
             if not (0 <= tx < MAP_SIZE and 0 <= ty < MAP_SIZE):
                 continue
-            # Impassable terrain
             if self.grid[ty][tx].type in IMPASSABLE:
                 continue
-            # Conflict: multiple agents targeting same tile
             if len(target_counts[(tx, ty)]) > 1:
                 continue
-            # Occupied by non-moving agent
             occupant = self._agent_at(tx, ty)
             if occupant and occupant.id not in moves:
                 continue
-            # Occupied by agent also moving but to a conflicted tile (they stay)
             if occupant and occupant.id in moves and occupant.id not in moved_agents:
-                # Check if occupant will actually move away
                 occ_target = moves[occupant.id]
                 otx, oty = occ_target
                 if not (0 <= otx < MAP_SIZE and 0 <= oty < MAP_SIZE):
@@ -171,11 +178,12 @@ class GameState:
                 if len(target_counts.get(occ_target, [])) > 1:
                     continue
 
+            old_x, old_y = agent.x, agent.y
             agent.x, agent.y = tx, ty
             moved_agents.add(aid)
-            # Reset harvest progress on move
             agent.harvest_target = None
             agent.harvest_count = 0
+            events.append({"type": "move", "agent": agent.name, "from": [old_x, old_y], "to": [tx, ty]})
 
         # --- Resolve harvests ---
         for aid, (tx, ty) in harvests.items():
@@ -194,8 +202,10 @@ class GameState:
                     agent.wood += 1
                     agent.harvest_count = 0
                     cell.resource_remaining -= 1
+                    events.append({"type": "harvest", "agent": agent.name, "pos": [tx, ty], "resource": "wood", "remaining": cell.resource_remaining})
                     if cell.resource_remaining <= 0:
                         self.grid[ty][tx] = Cell(CellType.EMPTY)
+                        events.append({"type": "depleted", "pos": [tx, ty], "was": "tree"})
 
             elif cell.type == CellType.ROCK and cell.resource_remaining > 0:
                 target_pos = (tx, ty)
@@ -207,8 +217,10 @@ class GameState:
                     agent.stone += 1
                     agent.harvest_count = 0
                     cell.resource_remaining -= 1
+                    events.append({"type": "harvest", "agent": agent.name, "pos": [tx, ty], "resource": "stone", "remaining": cell.resource_remaining})
                     if cell.resource_remaining <= 0:
                         self.grid[ty][tx] = Cell(CellType.EMPTY)
+                        events.append({"type": "depleted", "pos": [tx, ty], "was": "rock"})
 
         # --- Resolve places ---
         for aid, (tx, ty, material) in places.items():
@@ -222,12 +234,13 @@ class GameState:
             if material == "wood" and agent.wood > 0:
                 agent.wood -= 1
                 self.grid[ty][tx] = Cell(CellType.WOOD_BLOCK)
+                events.append({"type": "place", "agent": agent.name, "pos": [tx, ty], "material": "wood"})
             elif material == "stone" and agent.stone > 0:
                 agent.stone -= 1
                 self.grid[ty][tx] = Cell(CellType.STONE_BLOCK)
+                events.append({"type": "place", "agent": agent.name, "pos": [tx, ty], "material": "stone"})
 
         # --- Resolve attacks ---
-        # Collect positions of agents AFTER moves resolved (for miss detection)
         agent_positions: dict[tuple[int, int], str] = {}
         for a in self.agents.values():
             if a.hp > 0:
@@ -236,24 +249,28 @@ class GameState:
         dead_agents: list[str] = []
 
         for aid, (tx, ty) in attacks.items():
+            attacker = self.agents[aid]
             if not (0 <= tx < MAP_SIZE and 0 <= ty < MAP_SIZE):
                 continue
 
-            # Attack agent at target
             target_aid = agent_positions.get((tx, ty))
             if target_aid and target_aid != aid:
                 target_agent = self.agents[target_aid]
                 target_agent.hp -= 1
+                events.append({"type": "attack", "agent": attacker.name, "target": target_agent.name, "pos": [tx, ty], "target_hp": target_agent.hp})
                 if target_agent.hp <= 0:
                     dead_agents.append(target_aid)
+                    attacker.kills += 1
+                    events.append({"type": "kill", "agent": attacker.name, "target": target_agent.name, "pos": [tx, ty]})
                 continue
 
-            # Attack block
             cell = self.grid[ty][tx]
             if cell.type in (CellType.WOOD_BLOCK, CellType.STONE_BLOCK):
                 cell.hp -= 1
+                events.append({"type": "attack_block", "agent": attacker.name, "pos": [tx, ty], "block": cell.type.value, "block_hp": cell.hp})
                 if cell.hp <= 0:
                     self.grid[ty][tx] = Cell(CellType.EMPTY)
+                    events.append({"type": "destroy_block", "agent": attacker.name, "pos": [tx, ty]})
 
         # Remove dead agents (permadeath)
         for aid in dead_agents:
@@ -262,6 +279,7 @@ class GameState:
                 self.api_keys.pop(agent.api_key, None)
 
         self.tick += 1
+        return actions_log, events
 
     def get_fog_of_war(self, agent: Agent) -> dict:
         """Return 11x11 view centered on agent."""
@@ -282,6 +300,7 @@ class GameState:
                             "x": dx,
                             "y": dy,
                             "hp": occ.hp,
+                            "color": occ.color,
                         })
                 else:
                     row.append({"type": "void"})
@@ -296,6 +315,7 @@ class GameState:
                 "stone": agent.stone,
                 "x": agent.x,
                 "y": agent.y,
+                "color": agent.color,
             },
             "tick": self.tick,
         }

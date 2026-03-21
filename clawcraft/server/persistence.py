@@ -32,6 +32,12 @@ def init_db(db_path: Path = DB_PATH):
             data TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS tick_log (
+            tick INTEGER PRIMARY KEY,
+            actions TEXT NOT NULL,
+            events TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.close()
 
@@ -86,6 +92,7 @@ def save_snapshot(state: GameState, db_path: Path = DB_PATH):
             "wood": agent.wood,
             "stone": agent.stone,
             "color": agent.color,
+            "kills": agent.kills,
         }
 
     snapshot = {
@@ -139,8 +146,20 @@ def load_latest_snapshot(db_path: Path = DB_PATH) -> GameState | None:
             wood=adata["wood"],
             stone=adata["stone"],
             color=adata.get("color", "red"),
+            kills=adata.get("kills", 0),
         )
         state.agents[aid] = agent
 
     state.api_keys = snapshot["api_keys"]
     return state
+
+
+def log_tick(tick: int, actions: list, events: list, db_path: Path = DB_PATH):
+    """Log a tick's actions and resulting events."""
+    conn = _get_conn(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO tick_log (tick, actions, events) VALUES (?, ?, ?)",
+        (tick, json.dumps(actions), json.dumps(events)),
+    )
+    conn.commit()
+    conn.close()

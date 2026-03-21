@@ -38,6 +38,7 @@ class Agent:
     hp: int = AGENT_HP
     wood: int = 0
     stone: int = 0
+    color: str = "red"
     harvest_target: tuple[int, int] | None = None
     harvest_count: int = 0
 
@@ -81,7 +82,8 @@ class GameState:
             if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE and self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
                 break
 
-        agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y)
+        color = random.choice(["red", "blue"])
+        agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y, color=color)
         self.agents[agent_id] = agent
         self.api_keys[api_key] = agent_id
         return agent

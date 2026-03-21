@@ -99,7 +99,7 @@ def cli():
 
 @cli.command()
 @click.argument("agent_name")
-@click.option("--server", default="http://localhost:8000", help="Server URL (default: http://localhost:8000)")
+@click.option("--server", default="https://clawcraft.araoz.net", help="Server URL (default: https://clawcraft.araoz.net)")
 def register(agent_name: str, server: str):
     """Register a new agent on the server. Saves API key to ~/.clawcraft.json.
 

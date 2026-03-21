@@ -157,7 +157,7 @@ def get_map():
     return state.get_full_map()
 
 
-@app.get("/admin/view", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse)
 def view_map():
     """Browser-friendly whole-map visualization."""
     from .world import MAP_SIZE
@@ -181,14 +181,15 @@ def view_map():
     # Build agent data for JS
     live_agents = [a for a in state.agents.values() if a.hp > 0]
     agents_js = ",".join(
-        f'{{x:{a.x},y:{a.y},n:"{a.name}",hp:{a.hp},w:{a.wood},s:{a.stone}}}'
+        f'{{x:{a.x},y:{a.y},n:"{a.name}",hp:{a.hp},w:{a.wood},s:{a.stone},c:"{a.color}"}}'
         for a in live_agents
     )
 
     # Build agent list for sidebar
     agent_rows = ""
     for a in sorted(live_agents, key=lambda a: a.name):
-        agent_rows += f"<tr><td style='color:#ff4444'>{a.name}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td></tr>"
+        c = '#4488ff' if a.color == 'blue' else '#ff4444'
+        agent_rows += f"<tr><td style='color:{c}'>{a.name}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td></tr>"
 
     pixel_data = ",".join(f"'{c}'" for c in pixels)
 
@@ -234,7 +235,8 @@ for(let i=0;i<px.length;i++){{
 // Draw agents — circle fits within one grid cell
 agents.forEach(a=>{{
   const cx=a.x*P+P/2, cy=a.y*P+P/2, r=P/2;
-  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle='#ff4444';ctx.fill();
+  const clr=a.c==='blue'?'#4488ff':'#ff4444';
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
   ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
   ctx.fillText(a.n,cx,cy-r-3);
 }});
@@ -263,7 +265,7 @@ setTimeout(()=>location.reload(),2000);
 
 def run():
     import uvicorn
-    uvicorn.run("clawcraft.server.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("clawcraft.server.main:app", host="0.0.0.0", port=8800, reload=True)
 
 
 if __name__ == "__main__":

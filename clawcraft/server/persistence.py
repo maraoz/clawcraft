@@ -85,6 +85,7 @@ def save_snapshot(state: GameState, db_path: Path = DB_PATH):
             "hp": agent.hp,
             "wood": agent.wood,
             "stone": agent.stone,
+            "color": agent.color,
         }
 
     snapshot = {
@@ -137,6 +138,7 @@ def load_latest_snapshot(db_path: Path = DB_PATH) -> GameState | None:
             hp=adata["hp"],
             wood=adata["wood"],
             stone=adata["stone"],
+            color=adata.get("color", "red"),
         )
         state.agents[aid] = agent
 

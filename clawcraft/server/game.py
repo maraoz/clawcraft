@@ -51,6 +51,7 @@ class Agent:
             "hp": self.hp,
             "wood": self.wood,
             "stone": self.stone,
+            "color": self.color,
         }
 
 

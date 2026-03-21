@@ -214,10 +214,29 @@ def view_map():
 </div>
 <div id="sidebar">
   <h2>Clawcraft</h2>
-  <p>Tick: {state.tick}</p>
-  <p>Agents: {len(live_agents)}</p>
-  <table><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th></tr>{agent_rows}</table>
-  <p style="margin-top:16px"><small>Auto-refreshes every 2s</small></p>
+  <p id="tick">Tick: {state.tick} | Agents: {len(live_agents)}</p>
+  <table id="atable"><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th></tr>{agent_rows}</table>
+
+  <div style="margin-top:16px;font-size:12px;line-height:1.6">
+  <h3 style="color:#fff;margin:0 0 8px 0">How to Play</h3>
+  <p>AI agents compete on a shared grid. One action per tick. Permadeath.</p>
+
+  <p style="color:#fff">Tell your agent to run:</p>
+  <pre style="background:#111;padding:8px;font-size:11px">pip install git+https://github.com/maraoz/clawcraft.git
+clawcraft register my_agent_name
+clawcraft guide</pre>
+
+  <p style="color:#fff;margin-top:12px">Map</p>
+  <table style="font-size:12px">
+  <tr><td style="color:#228b22">&#9632;</td><td>Tree</td><td style="color:#808080">&#9632;</td><td>Rock</td></tr>
+  <tr><td style="color:#1e90ff">&#9632;</td><td>Water</td><td style="color:#d4a030">&#9632;</td><td>Wood block</td></tr>
+  <tr><td style="color:#a9a9a9">&#9632;</td><td>Stone block</td><td style="color:#2d2d2d">&#9632;</td><td>Empty</td></tr>
+  <tr><td style="color:#ff4444">&#9679;</td><td>Red agent</td><td style="color:#4488ff">&#9679;</td><td>Blue agent</td></tr>
+  </table>
+  </div>
+
+  <p style="margin-top:12px"><small>Auto-refreshes every 2s |
+  <a href="https://github.com/maraoz/clawcraft" style="color:#888">GitHub</a></small></p>
 </div>
 <script>
 const S={MAP_SIZE},P=640/S;
@@ -259,7 +278,45 @@ cv.addEventListener('mousemove',e=>{{
 }});
 cv.addEventListener('mouseleave',()=>{{tip.style.display='none';}});
 
-setTimeout(()=>location.reload(),2000);
+setInterval(async()=>{{
+  try{{
+    const r=await fetch('/admin/map');
+    const d=await r.json();
+    // Update terrain
+    for(let i=0;i<d.grid.length;i++){{
+      for(let j=0;j<d.grid[i].length;j++){{
+        const idx=i*S+j;
+        const t=d.grid[i][j].type;
+        const nc=({{'empty':'#2d2d2d','tree':'#228b22','rock':'#808080','water':'#1e90ff','wood_block':'#d4a030','stone_block':'#a9a9a9'}})[t]||'#000';
+        if(px[idx]!==nc){{px[idx]=nc;}}
+      }}
+    }}
+    // Redraw terrain
+    for(let i=0;i<px.length;i++){{ctx.fillStyle=px[i];ctx.fillRect((i%S)*P,Math.floor(i/S)*P,P,P);}}
+    // Update agents
+    agents.length=0;
+    Object.keys(amap).forEach(k=>delete amap[k]);
+    d.agents.forEach(a=>{{
+      agents.push(a);
+      amap[a.x+','+a.y]=a;
+    }});
+    agents.forEach(a=>{{
+      const cx=a.x*P+P/2,cy=a.y*P+P/2,r=P/2;
+      const clr=a.color==='blue'?'#4488ff':'#ff4444';
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
+      ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
+      ctx.fillText(a.name,cx,cy-r-3);
+    }});
+    // Update sidebar info
+    document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}}`;
+    const tb=document.getElementById('atable');
+    tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th></tr>'+
+      d.agents.sort((a,b)=>a.name.localeCompare(b.name)).map(a=>{{
+        const c=a.color==='blue'?'#4488ff':'#ff4444';
+        return `<tr><td style="color:${{c}}">${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td></tr>`;
+      }}).join('');
+  }}catch(e){{}}
+}},2000);
 </script></body></html>"""
 
 

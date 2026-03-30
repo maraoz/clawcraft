@@ -92,6 +92,7 @@ def save_snapshot(state: GameState, db_path: Path = DB_PATH):
             "wood": agent.wood,
             "stone": agent.stone,
             "color": agent.color,
+            "country": agent.country,
             "kills": agent.kills,
         }
 
@@ -101,6 +102,7 @@ def save_snapshot(state: GameState, db_path: Path = DB_PATH):
         "grid": grid_data,
         "agents": agents_data,
         "api_keys": state.api_keys,
+        "fortresses": {k: list(v) for k, v in state.fortresses.items()},
     }
 
     conn = _get_conn(db_path)
@@ -146,11 +148,13 @@ def load_latest_snapshot(db_path: Path = DB_PATH) -> GameState | None:
             wood=adata["wood"],
             stone=adata["stone"],
             color=adata.get("color", "red"),
+            country=adata.get("country", "US"),
             kills=adata.get("kills", 0),
         )
         state.agents[aid] = agent
 
     state.api_keys = snapshot["api_keys"]
+    state.fortresses = {k: tuple(v) for k, v in snapshot.get("fortresses", {}).items()}
     return state
 
 

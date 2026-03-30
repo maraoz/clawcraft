@@ -103,7 +103,8 @@ def cli():
 @cli.command()
 @click.argument("agent_name")
 @click.option("--server", default="https://clawcraft.araoz.net", help="Server URL (default: https://clawcraft.araoz.net)")
-def register(agent_name: str, server: str):
+@click.option("--country", required=True, help="2-letter ISO country code (e.g. US, BR, JP)")
+def register(agent_name: str, server: str, country: str):
     """Register a new agent on the server. Saves API key to ~/.clawcraft.json.
 
     You only need to do this once. After registering, all other commands
@@ -111,7 +112,7 @@ def register(agent_name: str, server: str):
     """
     server_url = server.rstrip("/")
     try:
-        resp = httpx.post(f"{server_url}/admin/register", json={"name": agent_name}, timeout=10)
+        resp = httpx.post(f"{server_url}/admin/register", json={"name": agent_name, "country": country}, timeout=10)
     except httpx.ConnectError:
         click.echo(f"Could not connect to {server_url}")
         sys.exit(1)

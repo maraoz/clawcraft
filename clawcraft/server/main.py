@@ -44,9 +44,12 @@ async def lifespan(app: FastAPI):
         state.api_keys = loaded.api_keys
         state.tick = loaded.tick
         state.seed = loaded.seed
+        state.fortresses = loaded.fortresses
     else:
         logger.info("No snapshot found, generating fresh world")
         state.initialize()
+        save_snapshot(state)
+        logger.info("Initial snapshot saved at tick 0")
 
     # Start tick loop
     task = asyncio.create_task(tick_loop())
@@ -92,6 +95,7 @@ def get_agent_from_auth(authorization: str | None):
 
 class RegisterRequest(BaseModel):
     name: str
+    country: str
 
 
 class ActionRequest(BaseModel):
@@ -109,10 +113,14 @@ def register(req: RegisterRequest):
         raise HTTPException(status_code=400, detail="Name must be 1-32 characters")
     if not re.match(r'^[a-zA-Z0-9_-]+$', name):
         raise HTTPException(status_code=400, detail="Name must be alphanumeric (a-z, 0-9, _, -)")
+    country = req.country.strip().upper()
+    if len(country) != 2 or not country.isalpha():
+        raise HTTPException(status_code=400, detail="Country must be a 2-letter ISO code (e.g. US, BR, JP)")
+
     if is_name_taken(name):
         raise HTTPException(status_code=409, detail="Name already taken")
 
-    agent = state.register_agent(name)
+    agent = state.register_agent(name, country=country)
     if not register_agent_name(name, agent.api_key, agent.id):
         # Race condition fallback
         state.agents.pop(agent.id, None)
@@ -163,6 +171,34 @@ def get_status(authorization: str | None = Header(default=None)):
 @app.get("/admin/map")
 def get_map():
     return state.get_full_map()
+
+
+class ResetRequest(BaseModel):
+    seed: int | None = None
+
+
+@app.post("/admin/reset")
+def reset_game(req: ResetRequest = ResetRequest()):
+    """DEV ONLY: Regenerate the map and reset all game state."""
+    import os
+    from .persistence import DB_PATH
+    state.agents.clear()
+    state.api_keys.clear()
+    state.pending_actions.clear()
+    state.initialize(seed=req.seed)
+    # Wipe and reinitialize the database
+    if DB_PATH.exists():
+        os.remove(DB_PATH)
+    init_db()
+    # DEV: spawn 5 dummy agents per team
+    countries = ["US", "BR", "JP", "DE", "FR", "KR", "AR", "GB", "IN", "AU"]
+    for i in range(5):
+        state.register_agent(f"red_{i+1}", country=countries[i])
+    for i in range(5):
+        state.register_agent(f"blue_{i+1}", country=countries[5 + i])
+    save_snapshot(state)
+    logger.info("Game reset — seed=%d, new world generated at tick 0", state.seed)
+    return {"status": "ok", "tick": state.tick, "seed": state.seed}
 
 
 
@@ -247,15 +283,19 @@ def view_map():
     # Build agent data for JS
     live_agents = [a for a in state.agents.values() if a.hp > 0]
     agents_js = ",".join(
-        f'{{x:{a.x},y:{a.y},n:"{a.name}",hp:{a.hp},w:{a.wood},s:{a.stone},c:"{a.color}"}}'
+        f'{{x:{a.x},y:{a.y},n:"{a.name}",hp:{a.hp},w:{a.wood},s:{a.stone},c:"{a.color}",cc:"{a.country}"}}'
         for a in live_agents
     )
 
     # Build agent list for sidebar
+    def _flag(cc: str) -> str:
+        return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in cc.upper()[:2])
+
     agent_rows = ""
     for a in sorted(live_agents, key=lambda a: a.name):
         c = '#4488ff' if a.color == 'blue' else '#ff4444'
-        agent_rows += f"<tr><td style='color:{c}'>{html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
+        flag = _flag(a.country)
+        agent_rows += f"<tr><td style='color:{c}'>{flag} {html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
 
     pixel_data = ",".join(f"'{c}'" for c in pixels)
 
@@ -281,7 +321,12 @@ def view_map():
 </div>
 <div id="sidebar">
   <h2>Clawcraft</h2>
-  <p id="tick">Tick: {state.tick} | Agents: {len(live_agents)}</p>
+  <p style="margin-bottom:8px">
+    <input id="seedinput" type="number" style="background:#333;color:#fff;border:1px solid #555;padding:4px 6px;width:120px;font-family:monospace;font-size:12px" value="">
+    <button style="background:#600;color:#fff;border:1px solid #900;padding:4px 12px;cursor:pointer;font-family:monospace;font-size:12px"
+      onclick="fetch('/admin/reset',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{seed:parseInt(document.getElementById('seedinput').value)||null}})}}).then(()=>location.reload())">Regenerate</button>
+  </p>
+  <p id="tick">Tick: {state.tick} | Agents: {len(live_agents)} | Seed: {state.seed}</p>
   <table id="atable"><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>{agent_rows}</table>
 
   <div style="margin-top:16px;font-size:12px;line-height:1.6">
@@ -308,13 +353,15 @@ Run `clawcraft guide` for the full rules, or `clawcraft --help` for command refe
   </table>
   </div>
 
-  <p style="margin-top:12px"><small>Auto-refreshes every 2s |
+  <p style="margin-top:8px"><small>Auto-refreshes every 2s |
   <a href="https://github.com/maraoz/clawcraft" style="color:#888">GitHub</a></small></p>
 </div>
 <script>
+document.getElementById('seedinput').value=Math.floor(Math.random()*2147483647);
 const S={MAP_SIZE},P=640/S;
 const px=[{pixel_data}];
 const agents=[{agents_js}];
+function flag(cc){{return cc?[...cc.toUpperCase()].map(c=>String.fromCodePoint(0x1F1E6+c.charCodeAt(0)-65)).join(''):''}}
 const cv=document.getElementById('c'),ctx=cv.getContext('2d');
 const tip=document.getElementById('tooltip');
 
@@ -330,7 +377,7 @@ agents.forEach(a=>{{
   const clr=a.c==='blue'?'#4488ff':'#ff4444';
   ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
   ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
-  ctx.fillText(a.n,cx,cy-r-3);
+  ctx.fillText(flag(a.cc)+' '+a.n,cx,cy-r-3);
 }});
 
 // Build agent position lookup
@@ -346,7 +393,7 @@ cv.addEventListener('mousemove',e=>{{
     tip.style.display='block';
     tip.style.left=(e.clientX-rect.left+12)+'px';
     tip.style.top=(e.clientY-rect.top-8)+'px';
-    tip.textContent=`${{a.n}} HP:${{a.hp}} W:${{a.w}} S:${{a.s}}`;
+    tip.textContent=`${{flag(a.cc)}} ${{a.n}} HP:${{a.hp}} W:${{a.w}} S:${{a.s}}`;
   }}else{{tip.style.display='none';}}
 }});
 cv.addEventListener('mouseleave',()=>{{tip.style.display='none';}});
@@ -378,15 +425,15 @@ setInterval(async()=>{{
       const clr=a.color==='blue'?'#4488ff':'#ff4444';
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
       ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
-      ctx.fillText(a.name,cx,cy-r-3);
+      ctx.fillText(flag(a.country)+' '+a.name,cx,cy-r-3);
     }});
     // Update sidebar info
-    document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}}`;
+    document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}} | Seed: ${{d.seed}}`;
     const tb=document.getElementById('atable');
     tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>'+
       d.agents.sort((a,b)=>a.name.localeCompare(b.name)).map(a=>{{
         const c=a.color==='blue'?'#4488ff':'#ff4444';
-        return `<tr><td style="color:${{c}}">${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td><td>${{a.kills}}</td></tr>`;
+        return `<tr><td style="color:${{c}}">${{flag(a.country)}} ${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td><td>${{a.kills}}</td></tr>`;
       }}).join('');
   }}catch(e){{}}
 }},2000);

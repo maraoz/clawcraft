@@ -39,6 +39,7 @@ class Agent:
     wood: int = 0
     stone: int = 0
     color: str = "red"
+    country: str = "US"
     kills: int = 0
     harvest_target: tuple[int, int] | None = None
     harvest_count: int = 0
@@ -53,6 +54,7 @@ class Agent:
             "wood": self.wood,
             "stone": self.stone,
             "color": self.color,
+            "country": self.country,
             "kills": self.kills,
         }
 
@@ -65,28 +67,33 @@ class GameState:
     tick: int = 0
     pending_actions: dict[str, dict] = field(default_factory=dict)  # agent_id -> action
     seed: int | None = None
+    fortresses: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)  # color -> (x1,y1,x2,y2)
 
     def initialize(self, seed: int | None = None):
-        self.seed = seed
-        self.grid = generate_grid(seed)
+        import random as _rand
+        self.seed = seed if seed is not None else _rand.randint(0, 2**31)
+        self.grid, self.fortresses = generate_grid(self.seed)
         self.tick = 0
 
-    def register_agent(self, name: str) -> Agent:
+    def register_agent(self, name: str, country: str = "US") -> Agent:
         agent_id = secrets.token_hex(8)
         api_key = secrets.token_hex(16)
 
-        # Find random empty tile near center (within 16-tile radius)
+        # Alternate teams based on current agent count
         import random
-        center = MAP_SIZE // 2
-        spawn_radius = 10
+        red_count = sum(1 for a in self.agents.values() if a.color == "red")
+        blue_count = sum(1 for a in self.agents.values() if a.color == "blue")
+        color = "red" if red_count <= blue_count else "blue"
+
+        # Spawn inside the team's fortress
+        x1, y1, x2, y2 = self.fortresses.get(color, (48, 48, 80, 80))
         while True:
-            x = random.randint(center - spawn_radius, center + spawn_radius)
-            y = random.randint(center - spawn_radius, center + spawn_radius)
-            if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE and self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
+            x = random.randint(x1 + 2, x2 - 2)
+            y = random.randint(y1 + 2, y2 - 2)
+            if self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
                 break
 
-        color = random.choice(["red", "blue"])
-        agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y, color=color)
+        agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y, color=color, country=country)
         self.agents[agent_id] = agent
         self.api_keys[api_key] = agent_id
         return agent
@@ -330,4 +337,4 @@ class GameState:
             grid.append(row)
 
         agents = [a.to_dict() for a in self.agents.values() if a.hp > 0]
-        return {"grid": grid, "agents": agents, "tick": self.tick}
+        return {"grid": grid, "agents": agents, "tick": self.tick, "seed": self.seed}

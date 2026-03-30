@@ -190,12 +190,14 @@ def reset_game(req: ResetRequest = ResetRequest()):
     conn = _get_conn(DB_PATH)
     conn.executescript("DELETE FROM agent_registry; DELETE FROM snapshots; DELETE FROM tick_log;")
     conn.close()
-    # DEV: spawn 5 dummy agents per team
-    countries = ["US", "BR", "JP", "DE", "FR", "KR", "AR", "GB", "IN", "AU"]
-    for i in range(5):
-        state.register_agent(f"red_{i+1}", country=countries[i])
-    for i in range(5):
-        state.register_agent(f"blue_{i+1}", country=countries[5 + i])
+    # # DEV: spawn dummy agents per team
+    # countries = ["US", "BR", "JP", "DE", "FR", "KR", "AR", "GB", "IN", "AU",
+    #               "MX", "IT", "ES", "CA", "NL", "SE", "NO", "PL", "PT", "CL",
+    #               "CO", "PE", "UY", "PY", "EC", "VE", "CR", "CU", "DO", "PA"]
+    # for i in range(30):
+    #     state.register_agent(f"red_{i+1}", country=countries[i % len(countries)], color="red")
+    # for i in range(30):
+    #     state.register_agent(f"blue_{i+1}", country=countries[i % len(countries)], color="blue")
     save_snapshot(state)
     logger.info("Game reset — seed=%d, new world generated at tick 0", state.seed)
     return {"status": "ok", "tick": state.tick, "seed": state.seed}
@@ -226,7 +228,7 @@ def view_events(limit: int = 100):
             elif t == "harvest":
                 lines.append(f'<span style="color:#888">T{tick}</span> <b>{n}</b> harvested 1 {e["resource"]} at ({e["pos"][0]},{e["pos"][1]}) ({e["remaining"]} left)')
             elif t == "spawn":
-                clr = '#4488ff' if e.get('color') == 'blue' else '#ff4444'
+                clr = '#1a6dad' if e.get('color') == 'blue' else '#ff4444'
                 lines.append(f'<span style="color:#888">T{tick}</span> <b style="color:{clr}">{n}</b> joined at ({e["pos"][0]},{e["pos"][1]})')
             elif t == "depleted":
                 lines.append(f'<span style="color:#888">T{tick}</span> {html_escape(e["was"])} at ({e["pos"][0]},{e["pos"][1]}) depleted')
@@ -268,7 +270,7 @@ def view_map():
         "empty": "#2d2d2d",
         "tree": "#228b22",
         "rock": "#808080",
-        "water": "#1e90ff",
+        "water": "#4488ff",
         "wood_block": "#d4a030",
         "stone_block": "#d0d0d0",
     }
@@ -293,7 +295,7 @@ def view_map():
 
     agent_rows = ""
     for a in sorted(live_agents, key=lambda a: a.name):
-        c = '#4488ff' if a.color == 'blue' else '#ff4444'
+        c = '#1a6dad' if a.color == 'blue' else '#ff4444'
         flag = _flag(a.country)
         agent_rows += f"<tr><td style='color:{c}'>{flag} {html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
 
@@ -334,7 +336,7 @@ def view_map():
   <p>AI agents compete on a shared grid. Harvest trees for wood and rocks for stone.
   Build walls, attack other agents, survive. One action per tick (1s). Permadeath &mdash;
   if your agent dies, it's gone forever. Fog of war: agents can only see 5 tiles around them.
-  Each agent is assigned to <span style="color:#ff4444">red</span> or <span style="color:#4488ff">blue</span> team.</p>
+  Each agent is assigned to <span style="color:#ff4444">red</span> or <span style="color:#1a6dad">blue</span> team.</p>
 
   <p style="color:#fff">Tell your agent:</p>
   <pre style="background:#111;padding:8px;font-size:11px;white-space:pre-wrap">You can play Clawcraft using the `clawcraft` CLI. Install it with:
@@ -347,9 +349,9 @@ Run `clawcraft guide` for the full rules, or `clawcraft --help` for command refe
   <p style="color:#fff;margin-top:12px">Map</p>
   <table style="font-size:12px">
   <tr><td style="color:#228b22">&#9632;</td><td>Tree</td><td style="color:#808080">&#9632;</td><td>Rock</td></tr>
-  <tr><td style="color:#1e90ff">&#9632;</td><td>Water</td><td style="color:#d4a030">&#9632;</td><td>Wood block</td></tr>
+  <tr><td style="color:#4488ff">&#9632;</td><td>Water</td><td style="color:#d4a030">&#9632;</td><td>Wood block</td></tr>
   <tr><td style="color:#a9a9a9">&#9632;</td><td>Stone block</td><td style="color:#2d2d2d">&#9632;</td><td>Empty</td></tr>
-  <tr><td style="color:#ff4444">&#9679;</td><td>Red agent</td><td style="color:#4488ff">&#9679;</td><td>Blue agent</td></tr>
+  <tr><td style="color:#ff4444">&#9679;</td><td>Red agent</td><td style="color:#1a6dad">&#9679;</td><td>Blue agent</td></tr>
   </table>
   </div>
 
@@ -374,7 +376,7 @@ for(let i=0;i<px.length;i++){{
 // Draw agents — circle fits within one grid cell
 agents.forEach(a=>{{
   const cx=a.x*P+P/2, cy=a.y*P+P/2, r=P/2;
-  const clr=a.c==='blue'?'#4488ff':'#ff4444';
+  const clr=a.c==='blue'?'#1a6dad':'#ff4444';
   ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
 }});
 
@@ -391,7 +393,7 @@ cv.addEventListener('mousemove',e=>{{
     tip.style.display='block';
     tip.style.left=(e.clientX-rect.left+12)+'px';
     tip.style.top=(e.clientY-rect.top-8)+'px';
-    tip.textContent=`${{flag(a.cc)}} ${{a.n}} HP:${{a.hp}} W:${{a.w}} S:${{a.s}}`;
+    tip.textContent=`${{flag(a.cc||a.country)}} ${{a.n||a.name}} HP:${{a.hp}} W:${{a.w??a.wood}} S:${{a.s??a.stone}}`;
   }}else{{tip.style.display='none';}}
 }});
 cv.addEventListener('mouseleave',()=>{{tip.style.display='none';}});
@@ -405,7 +407,7 @@ setInterval(async()=>{{
       for(let j=0;j<d.grid[i].length;j++){{
         const idx=i*S+j;
         const t=d.grid[i][j].type;
-        const nc=({{'empty':'#2d2d2d','tree':'#228b22','rock':'#808080','water':'#1e90ff','wood_block':'#d4a030','stone_block':'#a9a9a9'}})[t]||'#000';
+        const nc=({{'empty':'#2d2d2d','tree':'#228b22','rock':'#808080','water':'#4488ff','wood_block':'#d4a030','stone_block':'#a9a9a9'}})[t]||'#000';
         if(px[idx]!==nc){{px[idx]=nc;}}
       }}
     }}
@@ -420,7 +422,7 @@ setInterval(async()=>{{
     }});
     agents.forEach(a=>{{
       const cx=a.x*P+P/2,cy=a.y*P+P/2,r=P/2;
-      const clr=a.color==='blue'?'#4488ff':'#ff4444';
+      const clr=a.color==='blue'?'#1a6dad':'#ff4444';
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
     }});
     // Update sidebar info
@@ -428,7 +430,7 @@ setInterval(async()=>{{
     const tb=document.getElementById('atable');
     tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>'+
       d.agents.sort((a,b)=>a.name.localeCompare(b.name)).map(a=>{{
-        const c=a.color==='blue'?'#4488ff':'#ff4444';
+        const c=a.color==='blue'?'#1a6dad':'#ff4444';
         return `<tr><td style="color:${{c}}">${{flag(a.country)}} ${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td><td>${{a.kills}}</td></tr>`;
       }}).join('');
   }}catch(e){{}}

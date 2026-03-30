@@ -219,9 +219,61 @@ def generate_grid(seed: int | None = None) -> list[list[Cell]]:
                     placed += 1
 
     # --- Fortresses (red top-left, blue bottom-right) ---
-    fortresses = _generate_fortresses(grid, rng)
+    clearings = _generate_clearings(grid, rng)
 
-    return grid, fortresses
+    return grid, clearings
+
+
+def _generate_clearings(
+    grid: list[list[Cell]], rng: random.Random
+) -> dict[str, tuple[int, int, int, int]]:
+    """Create organic clearings (no structures) for each team. Returns spawn rects."""
+    margin = 4
+    rects: dict[str, tuple[int, int, int, int]] = {}
+
+    for color, y_lo, y_hi in [("red", margin, MAP_SIZE // 3),
+                               ("blue", MAP_SIZE * 2 // 3, MAP_SIZE - margin)]:
+        # Bounding rect for the clearing
+        cw = rng.randint(10, 14)
+        ch = rng.randint(8, 12)
+
+        # Find a position not overlapping water
+        for _ in range(50):
+            cx1 = rng.randint(margin, MAP_SIZE - cw - margin)
+            cy1 = rng.randint(y_lo, max(y_lo, y_hi - ch))
+            cx2, cy2 = cx1 + cw - 1, cy1 + ch - 1
+            if cy2 >= MAP_SIZE - margin:
+                continue
+            if not _rect_overlaps_water(grid, cx1 - 2, cy1 - 2, cx2 + 2, cy2 + 2):
+                break
+
+        rects[color] = (cx1, cy1, cx2, cy2)
+
+        # Use noise to create an organic (non-rectangular) clearing shape
+        center_x = (cx1 + cx2) / 2
+        center_y = (cy1 + cy2) / 2
+        radius_x = cw / 2
+        radius_y = ch / 2
+        noise = ValueNoise2D(seed=rng.randint(0, 2**31), grid_size=8)
+
+        for y in range(max(0, cy1 - 2), min(MAP_SIZE, cy2 + 3)):
+            for x in range(max(0, cx1 - 2), min(MAP_SIZE, cx2 + 3)):
+                # Normalized distance from center (elliptical)
+                dx = (x - center_x) / radius_x
+                dy = (y - center_y) / radius_y
+                dist = math.sqrt(dx * dx + dy * dy)
+                # Noise-based wobble on the boundary
+                wobble = noise.sample(float(x), float(y)) * 0.4 - 0.2
+                if dist < 0.85 + wobble:
+                    grid[y][x] = Cell(CellType.EMPTY)
+
+        # Place a wood block marker at the center
+        mcx = int(center_x)
+        mcy = int(center_y)
+        if 0 <= mcx < MAP_SIZE and 0 <= mcy < MAP_SIZE:
+            grid[mcy][mcx] = Cell(CellType.WOOD_BLOCK)
+
+    return rects
 
 
 def _rect_overlaps_water(grid: list[list[Cell]], x1: int, y1: int, x2: int, y2: int) -> bool:
@@ -323,9 +375,9 @@ def _build_fortress_accretion(
     bx1: int, by1: int, bx2: int, by2: int,
 ):
     """Build a fortress by accreting rooms within the bounding rect."""
-    # Room size ranges (including walls). 1 tile = 1m, so rooms are 4-9m.
-    min_room_w, max_room_w = 4, 9
-    min_room_h, max_room_h = 4, 8
+    # Room size ranges (including walls). Bigger rooms = less maze-like.
+    min_room_w, max_room_w = 6, 12
+    min_room_h, max_room_h = 5, 10
     min_door_overlap = 3  # minimum shared wall length to place a door
 
     # --- Clear the bounding area + buffer ---
@@ -351,7 +403,7 @@ def _build_fortress_accretion(
 
     # --- Accrete rooms ---
     max_failures = 150
-    max_rooms = 12
+    max_rooms = 6
     failures = 0
 
     while failures < max_failures and len(rooms) < max_rooms:
@@ -432,9 +484,11 @@ def _build_fortress_accretion(
         rooms.append(candidate)
         failures = 0  # reset on success
 
-        # Place door in the shared wall
-        door_pos = rng.choice(wall_segment)
-        doors.append(door_pos)
+        # Place wide door (2-3 cells) in the shared wall
+        door_width = min(rng.randint(2, 3), len(wall_segment))
+        start_idx = rng.randint(0, max(0, len(wall_segment) - door_width))
+        for i in range(door_width):
+            doors.append(wall_segment[start_idx + i])
 
     # --- Render rooms to grid ---
     # First pass: draw walls for all rooms (stone outer walls)
@@ -459,6 +513,63 @@ def _build_fortress_accretion(
     for dx, dy in doors:
         if 0 <= dx < MAP_SIZE and 0 <= dy < MAP_SIZE:
             grid[dy][dx] = Cell(CellType.EMPTY)
+
+    # --- Punch exits from rooms into the courtyard ---
+    # For each room, add 2-3 wide openings in walls that face empty space (not another room)
+    for room in rooms:
+        rx1, ry1, rx2, ry2 = room
+        room_exits = 0
+        sides_to_try = ["north", "south", "east", "west"]
+        rng.shuffle(sides_to_try)
+        for side in sides_to_try:
+            if room_exits >= rng.randint(2, 3):
+                break
+            if side == "north":
+                # Check if there's open space above this wall
+                check_y = ry1 - 1
+                if check_y < by1 or check_y < 0:
+                    continue
+                # Find a spot along the wall
+                gx = rng.randint(rx1 + 1, max(rx1 + 1, rx2 - 2))
+                width = min(2, rx2 - gx)
+                for dx in range(width):
+                    x = gx + dx
+                    if 0 <= x < MAP_SIZE and 0 <= ry1 < MAP_SIZE:
+                        grid[ry1][x] = Cell(CellType.EMPTY)
+                room_exits += 1
+            elif side == "south":
+                check_y = ry2 + 1
+                if check_y > by2 or check_y >= MAP_SIZE:
+                    continue
+                gx = rng.randint(rx1 + 1, max(rx1 + 1, rx2 - 2))
+                width = min(2, rx2 - gx)
+                for dx in range(width):
+                    x = gx + dx
+                    if 0 <= x < MAP_SIZE and 0 <= ry2 < MAP_SIZE:
+                        grid[ry2][x] = Cell(CellType.EMPTY)
+                room_exits += 1
+            elif side == "west":
+                check_x = rx1 - 1
+                if check_x < bx1 or check_x < 0:
+                    continue
+                gy = rng.randint(ry1 + 1, max(ry1 + 1, ry2 - 2))
+                height = min(2, ry2 - gy)
+                for dy in range(height):
+                    y = gy + dy
+                    if 0 <= rx1 < MAP_SIZE and 0 <= y < MAP_SIZE:
+                        grid[y][rx1] = Cell(CellType.EMPTY)
+                room_exits += 1
+            elif side == "east":
+                check_x = rx2 + 1
+                if check_x > bx2 or check_x >= MAP_SIZE:
+                    continue
+                gy = rng.randint(ry1 + 1, max(ry1 + 1, ry2 - 2))
+                height = min(2, ry2 - gy)
+                for dy in range(height):
+                    y = gy + dy
+                    if 0 <= rx2 < MAP_SIZE and 0 <= y < MAP_SIZE:
+                        grid[y][rx2] = Cell(CellType.EMPTY)
+                room_exits += 1
 
     # --- Exterior rectangular wall around the bounding rect ---
     # Expand 2 tiles out from the bounding rect for the outer wall

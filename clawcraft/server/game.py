@@ -75,15 +75,15 @@ class GameState:
         self.grid, self.fortresses = generate_grid(self.seed)
         self.tick = 0
 
-    def register_agent(self, name: str, country: str = "US") -> Agent:
+    def register_agent(self, name: str, country: str = "US", color: str | None = None) -> Agent:
         agent_id = secrets.token_hex(8)
         api_key = secrets.token_hex(16)
 
-        # Alternate teams based on current agent count
         import random
-        red_count = sum(1 for a in self.agents.values() if a.color == "red")
-        blue_count = sum(1 for a in self.agents.values() if a.color == "blue")
-        color = "red" if red_count <= blue_count else "blue"
+        if color is None:
+            red_count = sum(1 for a in self.agents.values() if a.color == "red")
+            blue_count = sum(1 for a in self.agents.values() if a.color == "blue")
+            color = "red" if red_count <= blue_count else "blue"
 
         # Spawn inside the team's fortress on an empty cell
         x1, y1, x2, y2 = self.fortresses.get(color, (48, 48, 80, 80))

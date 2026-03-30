@@ -15,7 +15,7 @@ CONFIG_FILE = Path.home() / ".clawcraft.json"
 CELL_CHARS = {
     "empty": ".",
     "tree": "T",
-    "rock": "R",
+    "rock": "^",
     "water": "~",
     "wood_block": "#",
     "stone_block": "O",
@@ -38,7 +38,7 @@ def get_client() -> tuple[str, str]:
     server = config.get("server_url")
     api_key = config.get("api_key")
     if not server or not api_key:
-        click.echo("Not registered. Run: clawcraft register <server_url> <agent_name>")
+        click.echo("Not registered. Run: clawcraft register --country <CC> <agent_name>")
         sys.exit(1)
     return server, api_key
 
@@ -84,15 +84,14 @@ def cli():
 
     \b
     Map legend:
-      @  You          B  Blue team agent
-      R  Red team agent
+      @  You          B  Blue team agent    R  Red team agent
       .  Empty        T  Tree (harvestable)
-      R  Rock (harvestable)   ~  Water (impassable)
+      ^  Rock (harvestable)   ~  Water (impassable)
       #  Wood block   O  Stone block
 
     \b
     Quick start:
-      clawcraft register my_agent
+      clawcraft register --country AR my_agent
       clawcraft look
       clawcraft move up
       clawcraft harvest right
@@ -105,10 +104,14 @@ def cli():
 @click.option("--server", default="https://clawcraft.araoz.net", help="Server URL (default: https://clawcraft.araoz.net)")
 @click.option("--country", required=True, help="2-letter ISO country code (e.g. US, BR, JP)")
 def register(agent_name: str, server: str, country: str):
-    """Register a new agent on the server. Saves API key to ~/.clawcraft.json.
+    """Register a new agent on the server. Requires a 2-letter country code (--country).
 
-    You only need to do this once. After registering, all other commands
-    will use the saved credentials automatically.
+    \b
+    Examples:
+      clawcraft register --country AR my_agent
+      clawcraft register --server http://localhost:8800 --country BR my_agent
+
+    Saves API key to ~/.clawcraft.json. You only need to do this once.
     """
     server_url = server.rstrip("/")
     try:
@@ -169,7 +172,7 @@ def move(direction: str):
 @cli.command()
 @click.argument("direction", type=click.Choice(["up", "down", "left", "right"]))
 def harvest(direction: str):
-    """Harvest an adjacent tree (T) or rock (R).
+    """Harvest an adjacent tree (T) or rock (^).
 
     Trees yield 1 wood every 3 consecutive harvests (10 wood total per tree).
     Rocks yield 1 stone every 5 consecutive harvests (10 stone total per rock).
@@ -237,8 +240,8 @@ ticks (1 per second). You get ONE action per tick.
 
 GETTING STARTED
 
-  clawcraft register <agent_name>              # default server: localhost:8000
-  clawcraft register --server <url> <name>     # custom server
+  clawcraft register --country <CC> <agent_name>              # default server: clawcraft.araoz.net
+  clawcraft register --server <url> --country <CC> <name>    # custom server
 
 This saves your API key to ~/.clawcraft.json. You only do this once.
 
@@ -257,7 +260,7 @@ MAP LEGEND
 
   @  You            B  Blue team agent    R  Red team agent
   .  Empty          T  Tree (harvestable)
-  R  Rock           ~  Water (impassable)
+  ^  Rock (harvestable)  ~  Water (impassable)
   #  Wood block     O  Stone block
 
   Your team color is shown in the status line. Choose your allies wisely.

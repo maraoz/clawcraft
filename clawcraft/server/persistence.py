@@ -94,6 +94,8 @@ def save_snapshot(state: GameState, db_path: Path = DB_PATH):
             "color": agent.color,
             "country": agent.country,
             "kills": agent.kills,
+            "harvest_target": list(agent.harvest_target) if agent.harvest_target else None,
+            "harvest_count": agent.harvest_count,
         }
 
     snapshot = {
@@ -138,6 +140,7 @@ def load_latest_snapshot(db_path: Path = DB_PATH) -> GameState | None:
 
     # Restore agents
     for aid, adata in snapshot["agents"].items():
+        ht = adata.get("harvest_target")
         agent = Agent(
             id=aid,
             name=adata["name"],
@@ -150,6 +153,8 @@ def load_latest_snapshot(db_path: Path = DB_PATH) -> GameState | None:
             color=adata.get("color", "red"),
             country=adata.get("country", "US"),
             kills=adata.get("kills", 0),
+            harvest_target=tuple(ht) if ht else None,
+            harvest_count=adata.get("harvest_count", 0),
         )
         state.agents[aid] = agent
 

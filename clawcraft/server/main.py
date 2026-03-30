@@ -86,7 +86,7 @@ def get_agent_from_auth(authorization: str | None):
     if not agent_id:
         raise HTTPException(status_code=401, detail="Invalid API key")
     agent = state.agents.get(agent_id)
-    if not agent:
+    if not agent or agent.hp <= 0:
         raise HTTPException(status_code=410, detail="Agent is dead")
     return agent
 
@@ -127,8 +127,7 @@ def register(req: RegisterRequest):
         state.api_keys.pop(agent.api_key, None)
         raise HTTPException(status_code=409, detail="Name already taken")
 
-    log_tick(state.tick, [], [{"type": "spawn", "agent": name, "pos": [agent.x, agent.y], "color": agent.color}])
-    logger.info("Registered agent '%s' at (%d, %d)", name, agent.x, agent.y)
+    logger.info("Registered agent '%s' at (%d, %d) [%s]", name, agent.x, agent.y, agent.color)
     return {
         "agent_id": agent.id,
         "api_key": agent.api_key,
@@ -173,34 +172,24 @@ def get_map():
     return state.get_full_map()
 
 
-class ResetRequest(BaseModel):
-    seed: int | None = None
-
-
-@app.post("/admin/reset")
-def reset_game(req: ResetRequest = ResetRequest()):
-    """DEV ONLY: Regenerate the map and reset all game state."""
-    from .persistence import DB_PATH
-    state.agents.clear()
-    state.api_keys.clear()
-    state.pending_actions.clear()
-    state.initialize(seed=req.seed)
-    # Wipe database tables instead of deleting the file (avoids triggering --reload)
-    from .persistence import _get_conn
-    conn = _get_conn(DB_PATH)
-    conn.executescript("DELETE FROM agent_registry; DELETE FROM snapshots; DELETE FROM tick_log;")
-    conn.close()
-    # # DEV: spawn dummy agents per team
-    # countries = ["US", "BR", "JP", "DE", "FR", "KR", "AR", "GB", "IN", "AU",
-    #               "MX", "IT", "ES", "CA", "NL", "SE", "NO", "PL", "PT", "CL",
-    #               "CO", "PE", "UY", "PY", "EC", "VE", "CR", "CU", "DO", "PA"]
-    # for i in range(30):
-    #     state.register_agent(f"red_{i+1}", country=countries[i % len(countries)], color="red")
-    # for i in range(30):
-    #     state.register_agent(f"blue_{i+1}", country=countries[i % len(countries)], color="blue")
-    save_snapshot(state)
-    logger.info("Game reset — seed=%d, new world generated at tick 0", state.seed)
-    return {"status": "ok", "tick": state.tick, "seed": state.seed}
+# # DEV ONLY: reset endpoint and model — uncomment to enable map regeneration
+# class ResetRequest(BaseModel):
+#     seed: int | None = None
+#
+# @app.post("/admin/reset")
+# def reset_game(req: ResetRequest = ResetRequest()):
+#     """DEV ONLY: Regenerate the map and reset all game state."""
+#     from .persistence import DB_PATH, _get_conn
+#     state.agents.clear()
+#     state.api_keys.clear()
+#     state.pending_actions.clear()
+#     state.initialize(seed=req.seed)
+#     conn = _get_conn(DB_PATH)
+#     conn.executescript("DELETE FROM agent_registry; DELETE FROM snapshots; DELETE FROM tick_log;")
+#     conn.close()
+#     save_snapshot(state)
+#     logger.info("Game reset — seed=%d, new world generated at tick 0", state.seed)
+#     return {"status": "ok", "tick": state.tick, "seed": state.seed}
 
 
 
@@ -283,7 +272,8 @@ def view_map():
             pixels.append(color)
 
     # Build agent data for JS
-    live_agents = [a for a in state.agents.values() if a.hp > 0]
+    all_agents = list(state.agents.values())
+    live_agents = [a for a in all_agents if a.hp > 0]
     agents_js = ",".join(
         f'{{x:{a.x},y:{a.y},n:"{a.name}",hp:{a.hp},w:{a.wood},s:{a.stone},c:"{a.color}",cc:"{a.country}"}}'
         for a in live_agents
@@ -294,10 +284,13 @@ def view_map():
         return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in cc.upper()[:2])
 
     agent_rows = ""
-    for a in sorted(live_agents, key=lambda a: a.name):
+    for a in sorted(all_agents, key=lambda a: (a.hp <= 0, a.name)):
         c = '#1a6dad' if a.color == 'blue' else '#ff4444'
         flag = _flag(a.country)
-        agent_rows += f"<tr><td style='color:{c}'>{flag} {html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
+        if a.hp <= 0:
+            agent_rows += f"<tr style='opacity:0.4;text-decoration:line-through'><td style='color:{c}'>{flag} {html_escape(a.name)}</td><td></td><td>DEAD</td><td></td><td>{a.kills}</td></tr>"
+        else:
+            agent_rows += f"<tr><td style='color:{c}'>{flag} {html_escape(a.name)}</td><td>({a.x},{a.y})</td><td>{a.hp}</td><td>{a.wood}w {a.stone}s</td><td>{a.kills}</td></tr>"
 
     pixel_data = ",".join(f"'{c}'" for c in pixels)
 
@@ -323,11 +316,13 @@ def view_map():
 </div>
 <div id="sidebar">
   <h2>Clawcraft</h2>
+  <!-- DEV ONLY: uncomment to enable map regeneration button
   <p style="margin-bottom:8px">
     <input id="seedinput" type="number" style="background:#333;color:#fff;border:1px solid #555;padding:4px 6px;width:120px;font-family:monospace;font-size:12px" value="">
     <button style="background:#600;color:#fff;border:1px solid #900;padding:4px 12px;cursor:pointer;font-family:monospace;font-size:12px"
       onclick="fetch('/admin/reset',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{seed:parseInt(document.getElementById('seedinput').value)||null}})}}).then(()=>location.reload())">Regenerate</button>
   </p>
+  -->
   <p id="tick">Tick: {state.tick} | Agents: {len(live_agents)} | Seed: {state.seed}</p>
   <table id="atable"><tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>{agent_rows}</table>
 
@@ -359,7 +354,8 @@ Run `clawcraft guide` for the full rules, or `clawcraft --help` for command refe
   <a href="https://github.com/maraoz/clawcraft" style="color:#888">GitHub</a></small></p>
 </div>
 <script>
-document.getElementById('seedinput').value=Math.floor(Math.random()*2147483647);
+// DEV ONLY: uncomment to populate seed input
+// document.getElementById('seedinput').value=Math.floor(Math.random()*2147483647);
 const S={MAP_SIZE},P=640/S;
 const px=[{pixel_data}];
 const agents=[{agents_js}];
@@ -413,10 +409,10 @@ setInterval(async()=>{{
     }}
     // Redraw terrain
     for(let i=0;i<px.length;i++){{ctx.fillStyle=px[i];ctx.fillRect((i%S)*P,Math.floor(i/S)*P,P,P);}}
-    // Update agents
+    // Update agents (only live ones on the map)
     agents.length=0;
     Object.keys(amap).forEach(k=>delete amap[k]);
-    d.agents.forEach(a=>{{
+    d.agents.filter(a=>a.hp>0).forEach(a=>{{
       agents.push(a);
       amap[a.x+','+a.y]=a;
     }});
@@ -426,11 +422,14 @@ setInterval(async()=>{{
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
     }});
     // Update sidebar info
-    document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}} | Seed: ${{d.seed}}`;
+    const live=d.agents.filter(a=>a.hp>0);
+    document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{live.length}} | Seed: ${{d.seed}}`;
     const tb=document.getElementById('atable');
+    const sorted=d.agents.sort((a,b)=>(a.hp<=0)-(b.hp<=0)||a.name.localeCompare(b.name));
     tb.innerHTML='<tr><th>Name</th><th>Pos</th><th>HP</th><th>Inv</th><th>Kills</th></tr>'+
-      d.agents.sort((a,b)=>a.name.localeCompare(b.name)).map(a=>{{
+      sorted.map(a=>{{
         const c=a.color==='blue'?'#1a6dad':'#ff4444';
+        if(a.hp<=0) return `<tr style="opacity:0.4;text-decoration:line-through"><td style="color:${{c}}">${{flag(a.country)}} ${{a.name}}</td><td></td><td>DEAD</td><td></td><td>${{a.kills}}</td></tr>`;
         return `<tr><td style="color:${{c}}">${{flag(a.country)}} ${{a.name}}</td><td>(${{a.x}},${{a.y}})</td><td>${{a.hp}}</td><td>${{a.wood}}w ${{a.stone}}s</td><td>${{a.kills}}</td></tr>`;
       }}).join('');
   }}catch(e){{}}

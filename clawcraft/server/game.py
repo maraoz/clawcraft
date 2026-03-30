@@ -98,11 +98,13 @@ class GameState:
             x, y = random.choice(empty_cells)
         else:
             # Fallback: anywhere on the map
-            while True:
+            for _attempt in range(500):
                 x = random.randint(0, MAP_SIZE - 1)
                 y = random.randint(0, MAP_SIZE - 1)
                 if self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
                     break
+            else:
+                raise RuntimeError("Could not find an empty cell to spawn agent after 500 attempts")
 
         agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y, color=color, country=country)
         self.agents[agent_id] = agent
@@ -276,7 +278,7 @@ class GameState:
                 target_agent = self.agents[target_aid]
                 target_agent.hp -= 1
                 events.append({"type": "attack", "agent": attacker.name, "target": target_agent.name, "pos": [tx, ty], "target_hp": target_agent.hp})
-                if target_agent.hp <= 0:
+                if target_agent.hp <= 0 and target_aid not in dead_agents:
                     dead_agents.append(target_aid)
                     attacker.kills += 1
                     events.append({"type": "kill", "agent": attacker.name, "target": target_agent.name, "pos": [tx, ty]})
@@ -290,9 +292,9 @@ class GameState:
                     self.grid[ty][tx] = Cell(CellType.EMPTY)
                     events.append({"type": "destroy_block", "agent": attacker.name, "pos": [tx, ty]})
 
-        # Remove dead agents (permadeath)
+        # Revoke dead agents' API keys (permadeath) but keep them in the dict
         for aid in dead_agents:
-            agent = self.agents.pop(aid, None)
+            agent = self.agents.get(aid)
             if agent:
                 self.api_keys.pop(agent.api_key, None)
 
@@ -347,5 +349,5 @@ class GameState:
                 row.append(self.grid[y][x].to_dict())
             grid.append(row)
 
-        agents = [a.to_dict() for a in self.agents.values() if a.hp > 0]
+        agents = [a.to_dict() for a in self.agents.values()]
         return {"grid": grid, "agents": agents, "tick": self.tick, "seed": self.seed}

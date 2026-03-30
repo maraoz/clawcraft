@@ -29,13 +29,12 @@ HARVESTS_PER_STONE = 5
 
 
 class Cell:
-    __slots__ = ("type", "hp", "resource_remaining", "harvest_progress")
+    __slots__ = ("type", "hp", "resource_remaining")
 
     def __init__(self, cell_type: CellType):
         self.type = cell_type
         self.hp = 0
         self.resource_remaining = 0
-        self.harvest_progress: dict[str, int] = {}  # agent_id -> consecutive harvests
 
         if cell_type == CellType.TREE:
             self.resource_remaining = TREE_TOTAL_WOOD

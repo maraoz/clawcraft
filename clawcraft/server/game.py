@@ -85,13 +85,24 @@ class GameState:
         blue_count = sum(1 for a in self.agents.values() if a.color == "blue")
         color = "red" if red_count <= blue_count else "blue"
 
-        # Spawn inside the team's fortress
+        # Spawn inside the team's fortress on an empty cell
         x1, y1, x2, y2 = self.fortresses.get(color, (48, 48, 80, 80))
-        while True:
-            x = random.randint(x1 + 2, x2 - 2)
-            y = random.randint(y1 + 2, y2 - 2)
-            if self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
-                break
+        # Collect all empty cells in the fortress rect
+        empty_cells = [
+            (ex, ey)
+            for ey in range(y1 + 1, y2)
+            for ex in range(x1 + 1, x2)
+            if self.grid[ey][ex].type == CellType.EMPTY and not self._agent_at(ex, ey)
+        ]
+        if empty_cells:
+            x, y = random.choice(empty_cells)
+        else:
+            # Fallback: anywhere on the map
+            while True:
+                x = random.randint(0, MAP_SIZE - 1)
+                y = random.randint(0, MAP_SIZE - 1)
+                if self.grid[y][x].type == CellType.EMPTY and not self._agent_at(x, y):
+                    break
 
         agent = Agent(id=agent_id, name=name, api_key=api_key, x=x, y=y, color=color, country=country)
         self.agents[agent_id] = agent

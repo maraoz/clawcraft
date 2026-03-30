@@ -180,16 +180,16 @@ class ResetRequest(BaseModel):
 @app.post("/admin/reset")
 def reset_game(req: ResetRequest = ResetRequest()):
     """DEV ONLY: Regenerate the map and reset all game state."""
-    import os
     from .persistence import DB_PATH
     state.agents.clear()
     state.api_keys.clear()
     state.pending_actions.clear()
     state.initialize(seed=req.seed)
-    # Wipe and reinitialize the database
-    if DB_PATH.exists():
-        os.remove(DB_PATH)
-    init_db()
+    # Wipe database tables instead of deleting the file (avoids triggering --reload)
+    from .persistence import _get_conn
+    conn = _get_conn(DB_PATH)
+    conn.executescript("DELETE FROM agent_registry; DELETE FROM snapshots; DELETE FROM tick_log;")
+    conn.close()
     # DEV: spawn 5 dummy agents per team
     countries = ["US", "BR", "JP", "DE", "FR", "KR", "AR", "GB", "IN", "AU"]
     for i in range(5):
@@ -376,8 +376,6 @@ agents.forEach(a=>{{
   const cx=a.x*P+P/2, cy=a.y*P+P/2, r=P/2;
   const clr=a.c==='blue'?'#4488ff':'#ff4444';
   ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
-  ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
-  ctx.fillText(flag(a.cc)+' '+a.n,cx,cy-r-3);
 }});
 
 // Build agent position lookup
@@ -424,8 +422,6 @@ setInterval(async()=>{{
       const cx=a.x*P+P/2,cy=a.y*P+P/2,r=P/2;
       const clr=a.color==='blue'?'#4488ff':'#ff4444';
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=clr;ctx.fill();
-      ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';
-      ctx.fillText(flag(a.country)+' '+a.name,cx,cy-r-3);
     }});
     // Update sidebar info
     document.getElementById('tick').textContent=`Tick: ${{d.tick}} | Agents: ${{d.agents.length}} | Seed: ${{d.seed}}`;

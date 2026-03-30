@@ -236,214 +236,334 @@ def _rect_overlaps_water(grid: list[list[Cell]], x1: int, y1: int, x2: int, y2: 
 def _generate_fortresses(
     grid: list[list[Cell]], rng: random.Random
 ) -> dict[str, tuple[int, int, int, int]]:
-    """Build a red (north) and blue (south) fortress. Returns {color: (x1, y1, x2, y2)} spawn rects."""
+    """Build a red (north) and blue (south) fortress via room accretion."""
     margin = 4
     rects: dict[str, tuple[int, int, int, int]] = {}
 
     for color, y_lo, y_hi in [("red", margin, MAP_SIZE // 3),
                                ("blue", MAP_SIZE * 2 // 3, MAP_SIZE - margin)]:
-        fw = rng.randint(18, 24)
-        fh = rng.randint(16, 20)
+        # Bounding rectangle for the fortress
+        bound_w = rng.randint(22, 28)
+        bound_h = rng.randint(18, 24)
 
         # Try positions until we find one not overlapping water
         for _ in range(50):
-            x1 = rng.randint(margin, MAP_SIZE - fw - margin)
-            y1 = rng.randint(y_lo, max(y_lo, y_hi - fh))
-            x2, y2 = x1 + fw - 1, y1 + fh - 1
-            if y2 >= MAP_SIZE - margin:
+            bx1 = rng.randint(margin, MAP_SIZE - bound_w - margin)
+            by1 = rng.randint(y_lo, max(y_lo, y_hi - bound_h))
+            bx2, by2 = bx1 + bound_w - 1, by1 + bound_h - 1
+            if by2 >= MAP_SIZE - margin:
                 continue
-            # Check the rect plus a 2-cell buffer for water
-            if not _rect_overlaps_water(grid, x1 - 2, y1 - 2, x2 + 2, y2 + 2):
+            if not _rect_overlaps_water(grid, bx1 - 2, by1 - 2, bx2 + 2, by2 + 2):
                 break
 
-        rects[color] = (x1, y1, x2, y2)
-        _build_fortress(grid, rng, x1, y1, x2, y2)
+        rects[color] = (bx1, by1, bx2, by2)
+        _build_fortress_accretion(grid, rng, bx1, by1, bx2, by2)
 
     return rects
 
 
-def _build_fortress(
+# ---------------------------------------------------------------------------
+# Room-accretion fortress builder
+# ---------------------------------------------------------------------------
+
+_Room = tuple[int, int, int, int]  # (x1, y1, x2, y2) inclusive, walls included
+
+
+def _rooms_overlap(a: _Room, b: _Room, margin: int = 1) -> bool:
+    """Check if two rooms overlap (with margin buffer on all sides of b)."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return not (ax2 + margin < bx1 or bx2 + margin < ax1 or
+                ay2 + margin < by1 or by2 + margin < ay1)
+
+
+def _shared_wall_segment(
+    source: _Room, new: _Room, side: str
+) -> list[tuple[int, int]]:
+    """Return the cells along the shared wall where a door can go.
+
+    Excludes corners (first/last cell) to avoid diagonal-only access.
+    """
+    sx1, sy1, sx2, sy2 = source
+    nx1, ny1, nx2, ny2 = new
+    cells = []
+
+    if side == "east":
+        # Shared column is sx2 (= nx1). Overlap in y.
+        y_lo = max(sy1, ny1) + 1
+        y_hi = min(sy2, ny2) - 1
+        x = sx2
+        for y in range(y_lo, y_hi + 1):
+            cells.append((x, y))
+    elif side == "west":
+        y_lo = max(sy1, ny1) + 1
+        y_hi = min(sy2, ny2) - 1
+        x = sx1
+        for y in range(y_lo, y_hi + 1):
+            cells.append((x, y))
+    elif side == "south":
+        x_lo = max(sx1, nx1) + 1
+        x_hi = min(sx2, nx2) - 1
+        y = sy2
+        for x in range(x_lo, x_hi + 1):
+            cells.append((x, y))
+    elif side == "north":
+        x_lo = max(sx1, nx1) + 1
+        x_hi = min(sx2, nx2) - 1
+        y = sy1
+        for x in range(x_lo, x_hi + 1):
+            cells.append((x, y))
+
+    return cells
+
+
+def _build_fortress_accretion(
     grid: list[list[Cell]],
     rng: random.Random,
-    x1: int, y1: int, x2: int, y2: int,
+    bx1: int, by1: int, bx2: int, by2: int,
 ):
-    """Build a fortress with irregular walls, multiple gates, and random interior rooms."""
-    fw = x2 - x1 + 1
-    fh = y2 - y1 + 1
+    """Build a fortress by accreting rooms within the bounding rect."""
+    # Room size ranges (including walls). 1 tile = 1m, so rooms are 4-9m.
+    min_room_w, max_room_w = 4, 9
+    min_room_h, max_room_h = 4, 8
+    min_door_overlap = 3  # minimum shared wall length to place a door
 
-    # --- Step 1: Compute irregular wall shape ---
-    # For each edge, generate a per-cell wobble (0, +1, or -1 inward/outward)
-    # so the outline isn't a perfect rectangle.
-    wall_cells: set[tuple[int, int]] = set()
-    interior_cells: set[tuple[int, int]] = set()
+    # --- Clear the bounding area + buffer ---
+    for y in range(max(0, by1 - 2), min(MAP_SIZE, by2 + 3)):
+        for x in range(max(0, bx1 - 2), min(MAP_SIZE, bx2 + 3)):
+            grid[y][x] = Cell(CellType.EMPTY)
 
-    # Generate wobble offsets for each edge
-    top_wobble = [0] + [rng.choice([-1, 0, 0, 0, 1]) for _ in range(fw - 2)] + [0]
-    bot_wobble = [0] + [rng.choice([-1, 0, 0, 0, 1]) for _ in range(fw - 2)] + [0]
-    left_wobble = [0] + [rng.choice([-1, 0, 0, 0, 1]) for _ in range(fh - 2)] + [0]
-    right_wobble = [0] + [rng.choice([-1, 0, 0, 0, 1]) for _ in range(fh - 2)] + [0]
+    rooms: list[_Room] = []
+    doors: list[tuple[int, int]] = []
 
-    # Smooth wobbles so we don't get single-cell spikes
-    def _smooth(w: list[int]) -> list[int]:
-        s = w[:]
-        for i in range(1, len(s) - 1):
-            if s[i] != 0 and s[i - 1] == 0 and s[i + 1] == 0:
-                s[i] = 0  # remove isolated bumps
-        return s
+    # --- First room: centered-ish ---
+    rw = rng.randint(min_room_w + 1, max_room_w)
+    rh = rng.randint(min_room_h + 1, max_room_h)
+    cx = (bx1 + bx2) // 2
+    cy = (by1 + by2) // 2
+    rx1 = cx - rw // 2 + rng.randint(-2, 2)
+    ry1 = cy - rh // 2 + rng.randint(-2, 2)
+    # Clamp to bounds
+    rx1 = max(bx1, min(rx1, bx2 - rw + 1))
+    ry1 = max(by1, min(ry1, by2 - rh + 1))
+    first_room = (rx1, ry1, rx1 + rw - 1, ry1 + rh - 1)
+    rooms.append(first_room)
 
-    top_wobble = _smooth(top_wobble)
-    bot_wobble = _smooth(bot_wobble)
-    left_wobble = _smooth(left_wobble)
-    right_wobble = _smooth(right_wobble)
+    # --- Accrete rooms ---
+    max_failures = 150
+    max_rooms = 12
+    failures = 0
 
-    # Top and bottom walls
-    for i in range(fw):
-        x = x1 + i
-        yt = y1 + top_wobble[i]
-        yb = y2 + bot_wobble[i]
-        if 0 <= x < MAP_SIZE:
-            if 0 <= yt < MAP_SIZE:
-                wall_cells.add((x, yt))
-            if 0 <= yb < MAP_SIZE:
-                wall_cells.add((x, yb))
+    while failures < max_failures and len(rooms) < max_rooms:
+        # Pick a random existing room to expand from
+        source = rng.choice(rooms)
+        sx1, sy1, sx2, sy2 = source
 
-    # Left and right walls
-    for j in range(fh):
-        y = y1 + j
-        xl = x1 + left_wobble[j]
-        xr = x2 + right_wobble[j]
-        if 0 <= y < MAP_SIZE:
-            if 0 <= xl < MAP_SIZE:
-                wall_cells.add((xl, y))
-            if 0 <= xr < MAP_SIZE:
-                wall_cells.add((xr, y))
+        # Pick a random side
+        side = rng.choice(["north", "south", "east", "west"])
 
-    # Corner towers (3x3 stone at each corner for a chunky look)
-    for cx, cy in [(x1, y1), (x1, y2 - 2), (x2 - 2, y1), (x2 - 2, y2 - 2)]:
+        # Generate candidate room dimensions
+        nw = rng.randint(min_room_w, max_room_w)
+        nh = rng.randint(min_room_h, max_room_h)
+
+        # Position the new room flush against the chosen side
+        if side == "east":
+            nx1 = sx2  # share the wall column
+            # Random y offset so they overlap vertically
+            overlap_range = min(sy2 - sy1 + 1, nh) - min_door_overlap
+            if overlap_range < 0:
+                failures += 1
+                continue
+            y_offset = rng.randint(-overlap_range, overlap_range)
+            ny1 = sy1 + y_offset
+        elif side == "west":
+            nx1 = sx1 - nw + 1  # new room's right wall = source's left wall
+            overlap_range = min(sy2 - sy1 + 1, nh) - min_door_overlap
+            if overlap_range < 0:
+                failures += 1
+                continue
+            y_offset = rng.randint(-overlap_range, overlap_range)
+            ny1 = sy1 + y_offset
+        elif side == "south":
+            ny1 = sy2  # share the wall row
+            overlap_range = min(sx2 - sx1 + 1, nw) - min_door_overlap
+            if overlap_range < 0:
+                failures += 1
+                continue
+            x_offset = rng.randint(-overlap_range, overlap_range)
+            nx1 = sx1 + x_offset
+        elif side == "north":
+            ny1 = sy1 - nh + 1
+            overlap_range = min(sx2 - sx1 + 1, nw) - min_door_overlap
+            if overlap_range < 0:
+                failures += 1
+                continue
+            x_offset = rng.randint(-overlap_range, overlap_range)
+            nx1 = sx1 + x_offset
+
+        nx2 = nx1 + nw - 1
+        ny2 = ny1 + nh - 1
+        candidate = (nx1, ny1, nx2, ny2)
+
+        # Validate: must fit within bounding rect
+        if nx1 < bx1 or ny1 < by1 or nx2 > bx2 or ny2 > by2:
+            failures += 1
+            continue
+
+        # Validate: must not overlap any existing room (except sharing one wall with source)
+        overlaps = False
+        for existing in rooms:
+            if existing == source:
+                continue
+            if _rooms_overlap(candidate, existing, margin=0):
+                overlaps = True
+                break
+        if overlaps:
+            failures += 1
+            continue
+
+        # Validate: enough shared wall for a door
+        wall_segment = _shared_wall_segment(source, candidate, side)
+        if len(wall_segment) < 1:
+            failures += 1
+            continue
+
+        # Place the room
+        rooms.append(candidate)
+        failures = 0  # reset on success
+
+        # Place door in the shared wall
+        door_pos = rng.choice(wall_segment)
+        doors.append(door_pos)
+
+    # --- Render rooms to grid ---
+    # First pass: draw walls for all rooms (stone outer walls)
+    for (rx1, ry1, rx2, ry2) in rooms:
+        for x in range(rx1, rx2 + 1):
+            for y in (ry1, ry2):
+                if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE:
+                    grid[y][x] = Cell(CellType.STONE_BLOCK)
+        for y in range(ry1, ry2 + 1):
+            for x in (rx1, rx2):
+                if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE:
+                    grid[y][x] = Cell(CellType.STONE_BLOCK)
+
+    # Second pass: carve interiors
+    for (rx1, ry1, rx2, ry2) in rooms:
+        for y in range(ry1 + 1, ry2):
+            for x in range(rx1 + 1, rx2):
+                if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE:
+                    grid[y][x] = Cell(CellType.EMPTY)
+
+    # Third pass: carve doors (clear the wall cell + one on each side for passage)
+    for dx, dy in doors:
+        if 0 <= dx < MAP_SIZE and 0 <= dy < MAP_SIZE:
+            grid[dy][dx] = Cell(CellType.EMPTY)
+
+    # --- Exterior rectangular wall around the bounding rect ---
+    # Expand 2 tiles out from the bounding rect for the outer wall
+    wx1, wy1 = bx1 - 2, by1 - 2
+    wx2, wy2 = bx2 + 2, by2 + 2
+
+    # Clear the buffer zone between inner rooms and outer wall
+    for y in range(max(0, wy1), min(MAP_SIZE, wy2 + 1)):
+        for x in range(max(0, wx1), min(MAP_SIZE, wx2 + 1)):
+            if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE:
+                if grid[y][x].type not in (CellType.STONE_BLOCK, CellType.EMPTY):
+                    grid[y][x] = Cell(CellType.EMPTY)
+
+    # Draw outer wall (wood)
+    for x in range(max(0, wx1), min(MAP_SIZE, wx2 + 1)):
+        if 0 <= wy1 < MAP_SIZE:
+            grid[wy1][x] = Cell(CellType.WOOD_BLOCK)
+        if 0 <= wy2 < MAP_SIZE:
+            grid[wy2][x] = Cell(CellType.WOOD_BLOCK)
+    for y in range(max(0, wy1), min(MAP_SIZE, wy2 + 1)):
+        if 0 <= wx1 < MAP_SIZE:
+            grid[y][wx1] = Cell(CellType.WOOD_BLOCK)
+        if 0 <= wx2 < MAP_SIZE:
+            grid[y][wx2] = Cell(CellType.WOOD_BLOCK)
+
+    # Corner towers (3x3 wood blocks at each corner)
+    for cx, cy in [(wx1 - 1, wy1 - 1), (wx1 - 1, wy2 - 1),
+                    (wx2 - 1, wy1 - 1), (wx2 - 1, wy2 - 1)]:
         for dx in range(3):
             for dy in range(3):
                 tx, ty = cx + dx, cy + dy
                 if 0 <= tx < MAP_SIZE and 0 <= ty < MAP_SIZE:
-                    wall_cells.add((tx, ty))
+                    grid[ty][tx] = Cell(CellType.WOOD_BLOCK)
 
-    # Interior = everything inside the base rect that isn't a wall
-    for y in range(y1, y2 + 1):
-        for x in range(x1, x2 + 1):
-            if (x, y) not in wall_cells:
-                interior_cells.add((x, y))
+    # Mid-wall turrets (small 2x2 bumps at ~1/3 and ~2/3 along each wall)
+    wall_w = wx2 - wx1
+    wall_h = wy2 - wy1
+    for frac in (0.33, 0.66):
+        # Top and bottom walls
+        tx = wx1 + int(wall_w * frac)
+        for dx in range(2):
+            for dy in range(2):
+                if 0 <= tx + dx < MAP_SIZE:
+                    if 0 <= wy1 - 1 + dy < MAP_SIZE:
+                        grid[wy1 - 1 + dy][tx + dx] = Cell(CellType.WOOD_BLOCK)
+                    if 0 <= wy2 + dy < MAP_SIZE:
+                        grid[wy2 + dy][tx + dx] = Cell(CellType.WOOD_BLOCK)
+        # Left and right walls
+        ty = wy1 + int(wall_h * frac)
+        for dx in range(2):
+            for dy in range(2):
+                if 0 <= ty + dy < MAP_SIZE:
+                    if 0 <= wx1 - 1 + dx < MAP_SIZE:
+                        grid[ty + dy][wx1 - 1 + dx] = Cell(CellType.WOOD_BLOCK)
+                    if 0 <= wx2 + dx < MAP_SIZE:
+                        grid[ty + dy][wx2 + dx] = Cell(CellType.WOOD_BLOCK)
 
-    # --- Step 2: Clear everything in and around the fortress ---
-    for y in range(max(0, y1 - 2), min(MAP_SIZE, y2 + 3)):
-        for x in range(max(0, x1 - 2), min(MAP_SIZE, x2 + 3)):
-            grid[y][x] = Cell(CellType.EMPTY)
-
-    # --- Step 3: Place walls ---
-    for wx, wy in wall_cells:
-        if 0 <= wx < MAP_SIZE and 0 <= wy < MAP_SIZE:
-            grid[wy][wx] = Cell(CellType.STONE_BLOCK)
-
-    # --- Step 4: Multiple gates (2-3 per fortress, on different sides) ---
-    sides = ["top", "bottom", "left", "right"]
+    # Gates in the outer wall (3-5 entries, 2-wide, on different sides)
+    num_gates = rng.randint(3, 5)
+    sides = ["north", "south", "east", "west"] * 2
     rng.shuffle(sides)
-    num_gates = rng.randint(2, 3)
-    for side in sides[:num_gates]:
-        if side == "top":
-            gx = rng.randint(x1 + 3, x2 - 3)
+    gates_placed = 0
+    used_positions: set[str] = set()
+    for side in sides:
+        if gates_placed >= num_gates:
+            break
+        key = side
+        if side == "north":
+            gx = rng.randint(wx1 + 3, wx2 - 4)
+            pos_key = f"n{gx // 5}"
+            if pos_key in used_positions:
+                continue
+            used_positions.add(pos_key)
             for dx in range(2):
-                # Clear wall and one cell outside for passage
-                for dy in range(-1, 2):
-                    ty = y1 + top_wobble[min(gx + dx - x1, fw - 1)] + dy
-                    if 0 <= gx + dx < MAP_SIZE and 0 <= ty < MAP_SIZE:
-                        grid[ty][gx + dx] = Cell(CellType.EMPTY)
-        elif side == "bottom":
-            gx = rng.randint(x1 + 3, x2 - 3)
+                x = gx + dx
+                if 0 <= x < MAP_SIZE and 0 <= wy1 < MAP_SIZE:
+                    grid[wy1][x] = Cell(CellType.EMPTY)
+        elif side == "south":
+            gx = rng.randint(wx1 + 3, wx2 - 4)
+            pos_key = f"s{gx // 5}"
+            if pos_key in used_positions:
+                continue
+            used_positions.add(pos_key)
             for dx in range(2):
-                for dy in range(-1, 2):
-                    ty = y2 + bot_wobble[min(gx + dx - x1, fw - 1)] + dy
-                    if 0 <= gx + dx < MAP_SIZE and 0 <= ty < MAP_SIZE:
-                        grid[ty][gx + dx] = Cell(CellType.EMPTY)
-        elif side == "left":
-            gy = rng.randint(y1 + 3, y2 - 3)
+                x = gx + dx
+                if 0 <= x < MAP_SIZE and 0 <= wy2 < MAP_SIZE:
+                    grid[wy2][x] = Cell(CellType.EMPTY)
+        elif side == "west":
+            gy = rng.randint(wy1 + 3, wy2 - 4)
+            pos_key = f"w{gy // 5}"
+            if pos_key in used_positions:
+                continue
+            used_positions.add(pos_key)
             for dy in range(2):
-                for dx in range(-1, 2):
-                    tx = x1 + left_wobble[min(gy + dy - y1, fh - 1)] + dx
-                    if 0 <= tx < MAP_SIZE and 0 <= gy + dy < MAP_SIZE:
-                        grid[gy + dy][tx] = Cell(CellType.EMPTY)
-        elif side == "right":
-            gy = rng.randint(y1 + 3, y2 - 3)
+                y = gy + dy
+                if 0 <= wx1 < MAP_SIZE and 0 <= y < MAP_SIZE:
+                    grid[y][wx1] = Cell(CellType.EMPTY)
+        elif side == "east":
+            gy = rng.randint(wy1 + 3, wy2 - 4)
+            pos_key = f"e{gy // 5}"
+            if pos_key in used_positions:
+                continue
+            used_positions.add(pos_key)
             for dy in range(2):
-                for dx in range(-1, 2):
-                    tx = x2 + right_wobble[min(gy + dy - y1, fh - 1)] + dx
-                    if 0 <= tx < MAP_SIZE and 0 <= gy + dy < MAP_SIZE:
-                        grid[gy + dy][tx] = Cell(CellType.EMPTY)
-
-    # --- Step 5: Interior rooms via recursive partitioning ---
-    inner_x1, inner_y1 = x1 + 3, y1 + 3
-    inner_x2, inner_y2 = x2 - 3, y2 - 3
-    _partition_rooms(grid, rng, inner_x1, inner_y1, inner_x2, inner_y2, depth=0)
-
-    # --- Step 6: A few stone pillars for character ---
-    for _ in range(rng.randint(2, 5)):
-        px = rng.randint(inner_x1, inner_x2)
-        py = rng.randint(inner_y1, inner_y2)
-        if grid[py][px].type == CellType.EMPTY:
-            grid[py][px] = Cell(CellType.STONE_BLOCK)
-
-
-def _partition_rooms(
-    grid: list[list[Cell]],
-    rng: random.Random,
-    x1: int, y1: int, x2: int, y2: int,
-    depth: int,
-):
-    """Recursively partition a rectangle into rooms with wood-block walls and doorways."""
-    w = x2 - x1 + 1
-    h = y2 - y1 + 1
-    min_room = 4
-
-    # Stop if too small or randomly stop at deeper levels
-    if w < min_room * 2 + 1 and h < min_room * 2 + 1:
-        return
-    if depth >= 3:
-        return
-    if depth >= 1 and rng.random() < 0.3:
-        return
-
-    # Choose split direction based on aspect ratio + randomness
-    can_split_h = h >= min_room * 2 + 1
-    can_split_v = w >= min_room * 2 + 1
-
-    if not can_split_h and not can_split_v:
-        return
-
-    if can_split_h and can_split_v:
-        split_h = rng.random() < (0.6 if h > w else 0.4)
-    else:
-        split_h = can_split_h
-
-    if split_h:
-        # Horizontal wall
-        split_y = rng.randint(y1 + min_room, y2 - min_room)
-        for x in range(x1, x2 + 1):
-            if 0 <= x < MAP_SIZE and 0 <= split_y < MAP_SIZE:
-                grid[split_y][x] = Cell(CellType.WOOD_BLOCK)
-        # Doorway (2-wide)
-        door_x = rng.randint(x1 + 1, x2 - 2)
-        grid[split_y][door_x] = Cell(CellType.EMPTY)
-        grid[split_y][door_x + 1] = Cell(CellType.EMPTY)
-        # Recurse
-        _partition_rooms(grid, rng, x1, y1, x2, split_y - 1, depth + 1)
-        _partition_rooms(grid, rng, x1, split_y + 1, x2, y2, depth + 1)
-    else:
-        # Vertical wall
-        split_x = rng.randint(x1 + min_room, x2 - min_room)
-        for y in range(y1, y2 + 1):
-            if 0 <= y < MAP_SIZE and 0 <= split_x < MAP_SIZE:
-                grid[y][split_x] = Cell(CellType.WOOD_BLOCK)
-        # Doorway (2-wide)
-        door_y = rng.randint(y1 + 1, y2 - 2)
-        grid[door_y][split_x] = Cell(CellType.EMPTY)
-        grid[door_y + 1][split_x] = Cell(CellType.EMPTY)
-        # Recurse
-        _partition_rooms(grid, rng, x1, y1, split_x - 1, y2, depth + 1)
-        _partition_rooms(grid, rng, split_x + 1, y1, x2, y2, depth + 1)
+                y = gy + dy
+                if 0 <= wx2 < MAP_SIZE and 0 <= y < MAP_SIZE:
+                    grid[y][wx2] = Cell(CellType.EMPTY)
+        gates_placed += 1
